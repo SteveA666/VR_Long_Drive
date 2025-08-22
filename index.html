@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>VR Long Drive Prototype</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+  </head>
+  <!--If there's time please help me bring up the props-->
+  <body>
+    <a-scene
+      xr-mode-ui="enabled: true"
+      renderer="antialias: true; physicallyCorrectLights: true; colorManagement: true; highRefreshRate: true"
+      background="color: #ECECEC"
+      shadow="type: pcfsoft"
+    >
+      <!-- Assets -->
+      <a-assets>
+        <a-asset-item id="carModel" src="Toyota AE86.glb"></a-asset-item>
+        <img
+          id="lavender"
+          src="https://marketplace.canva.com/EAGK_VGJ-wk/1/0/1600w/canva-purple-illustrative-lavender-desktop-wallpaper-IJjKe9JIOeM.jpg"
+          crossorigin="anonymous"
+        />
+        <img
+          id="desert"
+          src="https://t4.ftcdn.net/jpg/04/26/32/31/360_F_426323179_RK2agNyTn6YMGRSl0ApS372NJoL6FcsX.jpg"
+          crossorigin="anonymous"
+        />
+        <!-- Road Props -->
+        <a-asset-item id="prop_tree" src="Tree.glb"></a-asset-item>
+        <a-asset-item id="prop_gasCan" src="Gas can.glb"></a-asset-item>
+      </a-assets>
+
+      <!-- Camera rig -->
+      <a-entity
+        id="rig"
+        chase-camera="target: #carRoot; distance: -20; height: 10; lerp: 0.12; lookAhead: 10; bankFactor: 0.5; maxBank: 10"
+      >
+        <a-camera wasd-controls-enabled="false"></a-camera>
+      </a-entity>
+
+      <!-- Lights -->
+      <a-entity light="type: ambient; intensity: 0.35"></a-entity>
+      <a-entity
+        light="type: directional; intensity: 1.0; castShadow: true"
+        position="2 6 4"
+      ></a-entity>
+
+      <!-- Car -->
+      <a-entity
+        id="carRoot"
+        position="0 0 0"
+        rotation="0 180 0"
+        shadow="cast: true; receive: false"
+        arcade-car="maxSpeed: 100; accel: 30; brake: 40; turnRate: 130"
+      >
+        <a-entity
+          gltf-model="#carModel"
+          scale="1 1 1"
+          shadow="cast: true; receive: false"
+        ></a-entity>
+      </a-entity>
+
+      <!-- Ground -->
+      <a-entity
+        infinite-ground="target: #carRoot; texture: #desert; tileSize: 64; grid: 7; repeats: 8; y: 0"
+      ></a-entity>
+
+      <!-- Prop Spawner -->
+      <a-entity
+        random-props="target: #carRoot;
+                        models: #prop_tree;
+                        tileSize: 100;
+                        radius: 5;
+                        density: 0.4;
+                        slots: 3;
+                        y: 0;
+                        seed: 1234;
+                        maxPool: 150"
+      >
+      </a-entity>
+
+      <!-- Text at Starting Point -->
+      <a-text
+        value="START"
+        position="0 5 10"
+        color="#111111"
+        align="center"
+        scale="10 10 10"
+      >
+      </a-text>
+
+      <!-- Sky -->
+      <a-sky src="#lavender" color="#ECECEC"></a-sky>
+
+      <script>
+        // ----- Chase Camera that turns with the car (fixed: always behind) -----
+        AFRAME.registerComponent("chase-camera", {
+          schema: {
+            target: { type: "selector" }, // e.g. #carRoot
+            distance: { type: "number", default: 18 }, // meters behind target
+            height: { type: "number", default: 8 }, // meters above target
+            lerp: { type: "number", default: 0.12 }, // position smoothing 0..1
+            lookAhead: { type: "number", default: 8 }, // meters ahead of target to look
+            bankFactor: { type: "number", default: 0.45 }, // roll vs turn rate
+            maxBank: { type: "number", default: 12 }, // degrees clamp
+          },
+
+          init() {
+            this._goal = new THREE.Vector3();
+            this._tmp = new THREE.Vector3();
+            this._up = new THREE.Vector3(0, 1, 0);
+            this._forward = new THREE.Vector3(0, 0, -1);
+            this._right = new THREE.Vector3(1, 0, 0);
+            this._tQuat = new THREE.Quaternion();
+            this._tEuler = new THREE.Euler();
+            this._tPos = new THREE.Vector3();
+            this._prevYaw = null; // radians
+          },
+
+          tick(t, dtMS) {
+            const d = this.data;
+            const trg = d.target;
+            if (!trg) return;
+
+            const dt = Math.max(1e-3, Math.min(0.1, dtMS / 1000));
+
+            // Get target world transform
+            trg.object3D.getWorldPosition(this._tPos);
+            trg.object3D.getWorldQuaternion(this._tQuat);
+            this._tEuler.setFromQuaternion(this._tQuat, "YXZ");
+            let yaw = this._tEuler.y; // radians
+
+            // Car forward (A-Frame forward is -Z)
+            const fwd = this._forward
+              .clone()
+              .applyQuaternion(this._tQuat)
+              .normalize();
+
+            // =========================
+            // ORIGINAL (commented out):
+            // // Desired camera position: behind the car along forward, raised by height
+            // const desired = this._tPos
+            //   .clone()
+            //   .addScaledVector(fwd, -d.distance)
+            //   .addScaledVector(this._up, d.height);
+            // =========================
+
+            // =========================
+            // FIXED: use a LOCAL-SPACE offset so "+Z" is always behind, "+Y" is up.
+            // In A-Frame, forward is -Z, so +Z is "behind".
+            const offsetLocal = new THREE.Vector3(0, d.height, d.distance);
+            const offsetWorld = offsetLocal
+              .clone()
+              .applyQuaternion(this._tQuat);
+            const desired = this._tPos.clone().add(offsetWorld);
+            // =========================
+
+            // Smoothly move rig to desired position
+            this.el.object3D.position.lerp(desired, d.lerp);
+
+            // Look ahead along the car's forward direction
+            const lookTarget = this._tPos
+              .clone()
+              .addScaledVector(fwd, d.lookAhead);
+            this.el.object3D.lookAt(lookTarget);
+
+            // --- Subtle banking (roll) based on turn rate ---
+            if (this._prevYaw === null) this._prevYaw = yaw;
+            let dyaw = yaw - this._prevYaw;
+            dyaw = Math.atan2(Math.sin(dyaw), Math.cos(dyaw)); // wrap to [-PI, PI]
+            const yawRate = dyaw / dt; // rad/s
+
+            const bankRad = THREE.MathUtils.clamp(
+              -yawRate * d.bankFactor * 0.1, // negative to lean into the turn
+              THREE.MathUtils.degToRad(-d.maxBank),
+              THREE.MathUtils.degToRad(d.maxBank)
+            );
+
+            const r = this.el.getAttribute("rotation"); // degrees
+            r.z = THREE.MathUtils.radToDeg(bankRad);
+            this.el.setAttribute("rotation", r);
+
+            this._prevYaw = yaw;
+          },
+        });
+
+        // ----- Car Controller -----
+        AFRAME.registerComponent("arcade-car", {
+          schema: {
+            maxSpeed: { type: "number", default: 20 },
+            accel: { type: "number", default: 12 },
+            brake: { type: "number", default: 20 },
+            turnRate: { type: "number", default: 70 },
+          },
+          init() {
+            this.v = 0;
+            this.input = { f: 0, b: 0, l: 0, r: 0 };
+            this.keys = {};
+            window.addEventListener(
+              "keydown",
+              (e) => (this.keys[e.code] = true)
+            );
+            window.addEventListener(
+              "keyup",
+              (e) => (this.keys[e.code] = false)
+            );
+          },
+          tick(t, dtMS) {
+            const dt = Math.min(0.05, dtMS / 1000);
+
+            // Inputs
+            this.input.f = this.keys["KeyW"] || this.keys["ArrowUp"] ? 1 : 0;
+            this.input.b = this.keys["KeyS"] || this.keys["ArrowDown"] ? 1 : 0;
+            this.input.l = this.keys["KeyA"] || this.keys["ArrowLeft"] ? 1 : 0;
+            this.input.r = this.keys["KeyD"] || this.keys["ArrowRight"] ? 1 : 0;
+
+            // Speed integration (FIX: W accelerates forward)
+            const { accel, brake, maxSpeed } = this.data;
+            if (this.input.f) this.v -= accel * dt;
+            if (this.input.b) this.v += brake * dt;
+
+            // Drag
+            const drag = 0.98;
+            this.v *= Math.pow(drag, dt * 60);
+            this.v = Math.max(-maxSpeed * 0.35, Math.min(maxSpeed, this.v));
+
+            // Steering (FIX: right minus left)
+            const steer = this.input.l - this.input.r;
+            const steerScale = THREE.MathUtils.clamp(
+              Math.abs(this.v) / maxSpeed,
+              0.2,
+              1.0
+            );
+            const yawDelta = steer * this.data.turnRate * steerScale * dt;
+
+            // Apply rotation
+            const el = this.el;
+            const rot = el.getAttribute("rotation");
+            rot.y += yawDelta;
+            el.setAttribute("rotation", rot);
+
+            // Move forward along local -Z (A‑Frame forward)
+            const dir = new THREE.Vector3(0, 0, -1);
+            const q = new THREE.Quaternion().setFromEuler(
+              new THREE.Euler(
+                THREE.MathUtils.degToRad(rot.x),
+                THREE.MathUtils.degToRad(rot.y),
+                THREE.MathUtils.degToRad(rot.z)
+              )
+            );
+            dir.applyQuaternion(q);
+            el.object3D.position.addScaledVector(dir, this.v * dt);
+          },
+        });
+        AFRAME.registerComponent("repeat-texture", {
+          schema: {
+            src: { type: "selector" }, // the <img> or asset
+            repeat: { type: "vec2", default: { x: 50, y: 50 } },
+          },
+          init: function () {
+            const el = this.el;
+            const data = this.data;
+            const tex = new THREE.TextureLoader().load(
+              data.src.getAttribute("src")
+            );
+            tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(data.repeat.x, data.repeat.y);
+            el.getObject3D("mesh").material.map = tex;
+            el.getObject3D("mesh").material.needsUpdate = true;
+          },
+        });
+        AFRAME.registerComponent("infinite-ground", {
+          schema: {
+            target: { type: "selector" }, // the car/entity to follow
+            texture: { type: "selector" }, // <img id="..."> from <a-assets>
+            tileSize: { type: "number", default: 64 }, // meters per tile
+            grid: { type: "int", default: 7 }, // odd number: 5,7,9...
+            repeats: { type: "number", default: 8 }, // texture repeats per tile
+            y: { type: "number", default: 0 }, // ground height
+          },
+          init() {
+            const d = this.data;
+            if (!d.target) {
+              console.warn("[infinite-ground] Missing target selector");
+            }
+            if (!d.texture) {
+              console.warn("[infinite-ground] Missing texture img");
+            }
+
+            // Parent container to keep tiles tidy
+            this.container = new THREE.Group();
+            this.el.object3D.add(this.container);
+
+            // Shared plane geometry (XZ plane)
+            const geo = new THREE.PlaneGeometry(d.tileSize, d.tileSize);
+            geo.rotateX(-Math.PI / 2);
+
+            // Build a (grid x grid) ring of tiles centered on the target
+            this.tiles = [];
+            const half = Math.floor(d.grid / 2);
+
+            // Helper to build one tile (separate texture instance so repeat works per-tile)
+            const makeTile = () => {
+              const img = d.texture; // HTMLImageElement from <a-assets>
+              const tex = new THREE.Texture(img);
+              tex.needsUpdate = true;
+              tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+              tex.repeat.set(d.repeats, d.repeats);
+              tex.anisotropy =
+                this.el.sceneEl.renderer?.capabilities.getMaxAnisotropy?.() ||
+                1;
+
+              const mat = new THREE.MeshStandardMaterial({ map: tex });
+              const mesh = new THREE.Mesh(geo, mat);
+              mesh.receiveShadow = true;
+              return mesh;
+            };
+
+            for (let gz = -half; gz <= half; gz++) {
+              for (let gx = -half; gx <= half; gx++) {
+                const m = makeTile();
+                m.position.set(gx * d.tileSize, d.y, gz * d.tileSize);
+                this.container.add(m);
+                this.tiles.push(m);
+              }
+            }
+
+            this._lastCellX = Infinity;
+            this._lastCellZ = Infinity;
+          },
+
+          tick() {
+            const d = this.data;
+            const t = d.target;
+            if (!t) return;
+
+            const pos = t.object3D.position;
+            const cellX = Math.floor(pos.x / d.tileSize);
+            const cellZ = Math.floor(pos.z / d.tileSize);
+
+            // Only reflow tiles when we cross a tile boundary
+            if (cellX === this._lastCellX && cellZ === this._lastCellZ) return;
+            this._lastCellX = cellX;
+            this._lastCellZ = cellZ;
+
+            const half = Math.floor(d.grid / 2);
+            let idx = 0;
+            for (let gz = -half; gz <= half; gz++) {
+              for (let gx = -half; gx <= half; gx++) {
+                const tile = this.tiles[idx++];
+                // World-space tile coordinate around the current cell
+                const x = (cellX + gx) * d.tileSize;
+                const z = (cellZ + gz) * d.tileSize;
+                tile.position.set(x, d.y, z);
+                // Optional: if you want each tile’s pattern offset to advance with world coords:
+                // const tex = tile.material.map;
+                // tex.offset.set((cellX + gx) * d.repeats, (cellZ + gz) * d.repeats);
+                // tex.needsUpdate = true;
+              }
+            }
+          },
+        });
+
+        function rngFromInt(seed) {
+          return function () {
+            let t = (seed += 0x6d2b79f5);
+            t = Math.imul(t ^ (t >>> 15), t | 1);
+            t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+          };
+        }
+
+        function hashInt(str) {
+          let h = 2166136261 >>> 0;
+          for (let i = 0; i < str.length; i++) {
+            h ^= str.charCodeAt(i);
+            h = Math.imul(h, 16777619);
+          }
+          return h >>> 0;
+        }
+
+        AFRAME.registerComponent("random-props", {
+          schema: {
+            target: { type: "selector" },
+            models: { type: "string" }, // space-separated selectors, e.g. "#prop_tree #prop_gasCan"
+            tileSize: { type: "number", default: 50 },
+            radius: { type: "int", default: 5 },
+            density: { type: "number", default: 0.3 },
+            slots: { type: "int", default: 4 },
+            y: { type: "number", default: 0.5 }, // ground height
+            seed: { type: "int", default: 42 },
+            maxPool: { type: "int", default: 200 },
+
+            // New: auto-scale & fit-to-ground controls
+            autoScale: { type: "boolean", default: true },
+            targetHMin: { type: "number", default: 2.0 }, // meters
+            targetHMax: { type: "number", default: 5.0 }, // meters
+            jitter: { type: "number", default: 0.15 }, // +/- size variation
+            // Fallback random multiplier if you want to keep coarse scaling (used if autoScale=false)
+            minScale: { type: "number", default: 0.8 },
+            maxScale: { type: "number", default: 1.4 },
+          },
+
+          init() {
+            this.modelSelectors = (this.data.models || "")
+              .trim()
+              .split(/\s+/)
+              .filter(Boolean);
+            if (this.modelSelectors.length === 0) {
+              console.warn("[random-props] No models provided.");
+            }
+
+            this.pool = [];
+            this.inUse = new Map();
+            for (let i = 0; i < this.data.maxPool; i++) {
+              const e = document.createElement("a-entity");
+              e.setAttribute("visible", "false");
+              // optional: make sure spawned things can cast shadows
+              e.setAttribute("shadow", "cast: true; receive: false");
+              this.el.appendChild(e);
+              this.pool.push(e);
+            }
+
+            this._lastTileX = Infinity;
+            this._lastTileZ = Infinity;
+          },
+
+          _alloc() {
+            return this.pool.pop() || null;
+          },
+          _free(e) {
+            e.setAttribute("visible", "false");
+            e.removeAttribute("gltf-model");
+            e.object3D.scale.set(1, 1, 1);
+            e.object3D.position.set(0, 0, 0);
+            this.pool.push(e);
+          },
+          _tileKey(tx, tz, slot) {
+            return `${tx}:${tz}:${slot}`;
+          },
+
+          _fitAndScale(ent, r) {
+            const d = this.data;
+
+            // Wait until the GLTF is ready, then compute bbox & adjust
+            const applyFit = () => {
+              const mesh = ent.getObject3D("mesh") || ent.getObject3D("model");
+              if (!mesh) return;
+
+              // Compute unscaled bounds
+              const box = new THREE.Box3().setFromObject(mesh);
+              const size = new THREE.Vector3();
+              box.getSize(size);
+              const height = Math.max(1e-6, size.y); // avoid div-by-zero
+
+              // Decide desired height (random in [targetHMin, targetHMax])
+              let scale = 1;
+              if (d.autoScale) {
+                const targetH =
+                  5 * (d.targetHMin + (d.targetHMax - d.targetHMin) * r());
+                scale = targetH / height;
+                // add a small jitter to avoid uniform look
+                const j = 1 + d.jitter * (r() * 2 - 1);
+                scale *= j;
+              } else {
+                // coarse multiplicative range
+                scale = d.minScale + (d.maxScale - d.minScale) * r();
+              }
+
+              // Apply scale uniformly
+              ent.object3D.scale.set(scale, scale, scale);
+
+              // Recompute box at new scale to position on ground accurately
+              const scaledBox = new THREE.Box3().setFromObject(mesh);
+              const minY = scaledBox.min.y;
+
+              // Lift so minY sits exactly at ground height d.y
+              const lift = d.y - minY;
+              // Preserve X/Z we already placed; only set Y
+              const pos = ent.object3D.position;
+              ent.object3D.position.set(pos.x, lift, pos.z);
+
+              ent.__propFitted = true; // mark fitted to skip repeat work
+            };
+
+            // If model already loaded, fit immediately; else wait once.
+            if (ent.getObject3D("mesh") || ent.getObject3D("model")) {
+              applyFit();
+            } else {
+              ent.addEventListener("model-loaded", applyFit, { once: true });
+            }
+          },
+
+          tick() {
+            const d = this.data;
+            const t = d.target;
+            if (!t || this.modelSelectors.length === 0) return;
+
+            const pos = t.object3D.position;
+            const tx = Math.floor(pos.x / d.tileSize);
+            const tz = Math.floor(pos.z / d.tileSize);
+            if (tx === this._lastTileX && tz === this._lastTileZ) return;
+            this._lastTileX = tx;
+            this._lastTileZ = tz;
+
+            const need = new Set();
+
+            for (let gx = -d.radius; gx <= d.radius; gx++) {
+              for (let gz = -d.radius; gz <= d.radius; gz++) {
+                const tileX = tx + gx;
+                const tileZ = tz + gz;
+
+                for (let s = 0; s < d.slots; s++) {
+                  const key = this._tileKey(tileX, tileZ, s);
+                  need.add(key);
+
+                  const h = hashInt(key) ^ d.seed;
+                  const r = rngFromInt(h);
+                  if (r() > d.density) continue;
+
+                  let ent = this.inUse.get(key);
+                  if (!ent) {
+                    ent = this._alloc();
+                    if (!ent) continue;
+
+                    const pick =
+                      this.modelSelectors[
+                        Math.floor(r() * this.modelSelectors.length)
+                      ] || this.modelSelectors[0];
+                    ent.setAttribute("gltf-model", pick);
+                    ent.setAttribute("visible", "true");
+
+                    this.inUse.set(key, ent);
+                  }
+
+                  // Random placement within the tile (keep Y for fit step)
+                  const x = (tileX + r()) * d.tileSize;
+                  const z = (tileZ + r()) * d.tileSize;
+                  ent.object3D.position.set(x, ent.object3D.position.y, z);
+                  ent.setAttribute("rotation", `0 ${r() * 360} 0`);
+
+                  // Ensure size & ground fit once
+                  if (!ent.__propFitted) this._fitAndScale(ent, r);
+                }
+              }
+            }
+
+            // Free props outside the active ring
+            for (const [key, ent] of this.inUse.entries()) {
+              if (!need.has(key)) {
+                this._free(ent);
+                this.inUse.delete(key);
+              }
+            }
+          },
+        });
+      </script>
+    </a-scene>
+  </body>
+</html>
